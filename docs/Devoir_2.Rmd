@@ -338,7 +338,7 @@ TableURINEfilteredGTobj
 # https://www.danieldsjoberg.com/gtsummary/articles/tbl_summary.html
 ```
 
-# Introduction : 
+# Introduction 
 
 The excel files needed in this part are :
 
@@ -696,8 +696,316 @@ TableURINEfilteredGTstatOBJ
 Note : The N number showed under each treatement is hardcoded, which means the % in each Day are taken according to the original N number which makes them false, thus making statistical tests false as well.
 The problematic part is highlighted in the code with comments below it and more explanation.
 
-```{r, echo=TRUE}
+\
+\
+\
 
+# Annex 
+
+## R script
+
+```{r, eval=F, echo=T}
+#Devoir 2
+require(tidyverse)
+require(stringr)
+require(gridExtra)
+require(gtsummary)
+require(gt)
+require(spatstat.utils)
+
+
+#### Objective 01 : Graphical representation of patients evolution during the 14 days
+
+#### In patient protocol (113 IN patients 77+36)
+
+### DM Table with variable that indicates the ARM.
+dm <- read.csv("ascii-data-files nida-ctn-0001-20230318/dm.csv", header = T, dec = ".")
+
+### DS Table with variables that indicates remaining patients
+ds <- read.csv("ascii-data-files nida-ctn-0001-20230318/ds.csv", header = T, dec = ".")
+
+tabDSfilter <- ds %>% select(USUBJID, DSDECOD, VISIT, VISITNUM, DSSTDY, EPOCH) %>% 
+  filter((!VISIT %in% c("BASELINE, ANY DAY PRIOR TO FIRST DOSE")),
+         (!DSDECOD %in% c("VOLUNTARY TRANSFERRED TO ANOTHER TREATMENT PROGRAM (INDICATE TYPE)","DISCHARGED FOR OTHER (SPECIFY)"))) %>% 
+  select(USUBJID,DSSTDY) %>% 
+  group_by(USUBJID) %>%
+  filter(!is.na(DSSTDY)) %>% 
+  filter(DSSTDY > 0) %>% 
+  filter(DSSTDY == min(DSSTDY)) %>% 
+  distinct()
+
+# Adding the ARM column.
+tabDSfilter <- left_join(tabDSfilter, dm, by= "USUBJID")
+tabDSfilter <- tabDSfilter %>% select(USUBJID, DSSTDY, ARM, EPOCH)
+
+## Preparing the IN Protocole dataframes for ggplot
+# Bup IN patients.
+tabDSfinalBUP01 <-tabDSfilter %>% 
+  filter(ARM=="BUPRENORPHINE/NALOXONE") %>% 
+  group_by(DSSTDY) %>%
+  # a better way would be to automatize this with some sort of loop IN BIND ROWS
+  mutate(DSSTDY = if_else(DSSTDY > 14, 14, DSSTDY)) %>%
+  summarize(count = n_distinct(USUBJID)) %>% 
+  bind_rows(data.frame(DSSTDY = c(2, 4, 6, 11, 12), count = c(0, 0, 0, 0, 0))) %>% 
+  arrange(DSSTDY) %>% 
+  mutate(negcount = revcumsum(count))
+
+# Clonidine IN patients.
+tabDSfinalCLON01 <- tabDSfilter %>% 
+  filter(ARM=="CLONIDINE") %>% 
+  mutate(DSSTDY = if_else(DSSTDY > 14, 14, DSSTDY)) %>%
+  group_by(DSSTDY) %>%
+  summarize(count = n_distinct(USUBJID)) %>% 
+  bind_rows(data.frame(DSSTDY = c(12, 13), count = c(0, 0))) %>% 
+  arrange(DSSTDY) %>% 
+  mutate(negcount = revcumsum(count))
+
+
+#### Out patient protocol (We should have 230 OUT patients 156+74)
+dm2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/dm.csv", header = T, dec = ".")
+ds2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/ds.csv", header = T, dec = ".")
+
+tabDSfilter2 <- ds2 %>% select(USUBJID, DSDECOD, VISIT, VISITNUM, DSSTDY, EPOCH) %>% 
+  filter((!VISIT %in% c("BASELINE, ANY DAY PRIOR TO FIRST DOSE")),
+         (!DSDECOD %in% c("VOLUNTARY TRANSFERRED TO ANOTHER TREATMENT PROGRAM (INDICATE TYPE)","DISCHARGED FOR OTHER (SPECIFY)"))) %>% 
+  select(USUBJID,DSSTDY) %>% 
+  group_by(USUBJID) %>%
+  filter(!is.na(DSSTDY)) %>% 
+  filter(DSSTDY > 0) %>% 
+  filter(DSSTDY == min(DSSTDY)) %>% 
+  distinct()
+
+tabDSfilter2 <- left_join(tabDSfilter2, dm2, by= "USUBJID")
+tabDSfilter2 <- tabDSfilter2 %>% select(USUBJID, DSSTDY, ARM, EPOCH) %>% filter(!ARM=="SCREEN FAILURE")
+
+# Issue with patient 02_068937. Missing from DS, was he discharged?, he belonged to BUP/NX Protocole.
+# We will assume since his absence from DS means he continued the study until the end (D14), thus starting from Day 0 with 230 screening patients for Out patients. Which is the correct number.
+x1 <- data.frame(USUBJID="02_068937", DSSTDY=14, ARM="BUPRENORPHINE/NALOXONE")
+tabDSfilter2 <- rbind(tabDSfilter2, x1)
+
+## Preparing the OUT Protocole dataframes for ggplot
+# Bup OUT patients.
+tabDSfinalBUP02 <-tabDSfilter2 %>% 
+  filter(ARM=="BUPRENORPHINE/NALOXONE") %>% 
+  group_by(DSSTDY) %>%
+  mutate(DSSTDY = if_else(DSSTDY > 14, 14, DSSTDY)) %>%
+  summarize(count = n_distinct(USUBJID)) %>% 
+  bind_rows(data.frame(DSSTDY = c(5, 12), count = c(0, 0))) %>% 
+  arrange(DSSTDY) %>% 
+  mutate(negcount = revcumsum(count))
+
+# Clonidine OUT patients.
+tabDSfinalCLON02 <-tabDSfilter2 %>% 
+  filter(ARM=="CLONIDINE") %>% 
+  mutate(DSSTDY = if_else(DSSTDY > 14, 14, DSSTDY)) %>%
+  group_by(DSSTDY) %>%
+  summarize(count = n_distinct(USUBJID)) %>% 
+  bind_rows(data.frame(DSSTDY = c(5, 12), count = c(0, 0))) %>% 
+  arrange(DSSTDY) %>% 
+  mutate(negcount = revcumsum(count))
+
+#All 4 tables are generated, now a plot is needed.
+ALLplots <- ggplot()+
+  # blue plot BUP in patient
+  geom_line(data=tabDSfinalBUP01, aes(x=DSSTDY, y=negcount/sum(count), colour="deepskyblue"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalBUP01, aes(x=DSSTDY, y=negcount/sum(count)),
+              colour="black", size=1) +
+  # darker blue plot BUP out patient
+  geom_line(data=tabDSfinalBUP02, aes(x=DSSTDY, y=negcount/sum(count),colour="deepskyblue3"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalBUP02, aes(x=DSSTDY, y=negcount/sum(count)),
+              colour="black", size=1) +
+  
+  # magenta plot CLON in patient
+  geom_line(data=tabDSfinalCLON01, aes(x=DSSTDY, y=negcount/sum(count), colour="magenta"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalCLON01, aes(x=DSSTDY, y=negcount/sum(count)),
+             shape=17, colour="black", size=1.5) +
+  # darker magenta plot CLON out patient
+  geom_line(data=tabDSfinalCLON02, aes(x=DSSTDY, y=negcount/sum(count), colour="magenta4"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalCLON02, aes(x=DSSTDY, y=negcount/sum(count)),
+             shape=17, colour="black", size=1.5)+
+  ylim(0,1)+
+  scale_x_continuous(breaks=c(2,4,6,8,10,12,14))+
+  theme_classic()+
+  theme(panel.grid.major = element_line(colour = "gray95"))+
+  xlab("Study Days") + ylab("Proportion Retained")+
+  scale_color_identity(name = "Protocol",
+                       breaks = c("deepskyblue", "deepskyblue3", "magenta", "magenta4"),
+                       labels = c("BUP-in", "BUP-out", "CLON-in", "CLON-out"),
+                       guide = "legend")
+ALLplots
+
+
+#In Protocol 
+Inplots <- ggplot()+
+  # blue plot BUP in patient
+  geom_line(data=tabDSfinalBUP01, aes(x=DSSTDY, y=negcount/sum(count), colour="deepskyblue"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalBUP01, aes(x=DSSTDY, y=negcount/sum(count)),
+             colour="black", size=1) +
+  # magenta plot CLON in patient
+  geom_line(data=tabDSfinalCLON01, aes(x=DSSTDY, y=negcount/sum(count), colour="magenta"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalCLON01, aes(x=DSSTDY, y=negcount/sum(count)),
+             shape=17, colour="black", size=1.5) +
+  ylim(0,1)+
+  scale_x_continuous(breaks=c(2,4,6,8,10,12,14))+
+  theme_classic()+
+  theme(panel.grid.major = element_line(colour = "gray95"))+
+  xlab("Study Days") + ylab("Proportion Retained")+
+  scale_color_identity(name = "Protocol",
+                       breaks = c("deepskyblue", "magenta"),
+                       labels = c("BUP-in", "CLON-in"),
+                       guide = "legend")
+
+#Out protocol
+Outplots <- ggplot()+
+  # darker blue plot BUP out patient
+  geom_line(data=tabDSfinalBUP02, aes(x=DSSTDY, y=negcount/sum(count),colour="deepskyblue3"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalBUP02, aes(x=DSSTDY, y=negcount/sum(count)),
+             colour="black", size=1) +
+  # darker magenta plot CLON out patient
+  geom_line(data=tabDSfinalCLON02, aes(x=DSSTDY, y=negcount/sum(count), colour="magenta4"),
+            size=0.5) + 
+  geom_point(data=tabDSfinalCLON02, aes(x=DSSTDY, y=negcount/sum(count)),
+             shape=17, colour="black", size=1.5)+
+  ylim(0,1)+
+  scale_x_continuous(breaks=c(2,4,6,8,10,12,14))+
+  theme_classic()+
+  theme(panel.grid.major = element_line(colour = "gray95"))+
+  xlab("Study Days") + ylab("Proportion Retained")+
+  scale_color_identity(name = "Protocol",
+                       breaks = c("deepskyblue3", "magenta4"),
+                       labels = c("BUP-out", "CLON-out"),
+                       guide = "legend")
+
+Arrangedplots <- grid.arrange(Inplots, Outplots, nrow=1)
+
+#We made overall 4 plots : 
+#The first one has all of the protocoles together #ALLplots
+#The last one has them split in two screens #Arrangedplots
+#The second one has In protocole #Inplots
+#The third one has Out protocole #Outplots
+
+####
+
+#### Objective 02 : Creating a table that summarizes the study results.
+# Like Flow chart that we filled, but this time with more detail about who reached each day and had a negative test result for opoids.
+
+# Importing lb database containg opioid test results, and dm with arm.
+lb <- read.csv("ascii-data-files nida-ctn-0001-20230318/lb.csv", header = T, dec = ".")
+lb2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/lb.csv", header = T, dec = ".")
+dm3 <- dm %>% filter(ARM %in% c("CLONIDINE","BUPRENORPHINE/NALOXONE")) %>% select(USUBJID, ARM)
+dm4 <- dm2 %>% filter(ARM %in% c("CLONIDINE","BUPRENORPHINE/NALOXONE")) %>% select (USUBJID, ARM)
+lb3 <- lb %>% filter(EPOCH == "ACTIVE", VISITNUM %in% c(1:14)) #Missing 5 patients from lb3 compared to dm3 when applying this filter. as they are still in screening epoch but have already been assigned in dm database "01_018076" "01_027452" "01_058918" "01_063935" "01_067193".
+lb4 <- lb2 %>% filter(EPOCH == "ACTIVE", VISITNUM %in% c(1:14)) #Missing 27 patients from lb4 compared to dm4 when applying this filter.
+
+# Adding the ARM column.
+list_df10 = list(lb3, dm3)
+tabURINE <- list_df10 %>% 
+  reduce(full_join, by='USUBJID') %>% 
+  select("USUBJID", "LBTEST", "LBORRES", "LBSTAT", "LBREASND", "LBSPEC", "LBMETHOD", "VISIT", "VISITNUM", "LBDY", "LBDTC", "ARM") #113 patients
+
+list_df11 = list(lb4, dm4)
+tabURINE2 <- list_df11 %>% 
+  reduce(full_join, by='USUBJID') %>% 
+  select("USUBJID", "LBTEST", "LBORRES", "LBSTAT", "LBREASND", "LBSPEC", "LBMETHOD", "VISIT", "VISITNUM", "LBDY", "LBDTC", "ARM") #231 patients
+
+
+# Merging both tables
+TableURINE <- rbind(tabURINE, tabURINE2)
+
+TableURINE <- TableURINE %>% 
+  mutate(TESTperiod = ifelse(VISITNUM %in% c(2,3,4,5,6), "Day 3 or 4",
+                                       ifelse(VISITNUM %in% c(7,8,9), "Day 7 or 8", 
+                                              ifelse(VISITNUM %in% c(10,11,12), "Day 10 or 11",       
+                                                     ifelse(VISITNUM %in% c(13,14,15,16,17), "Day 13 or 14",NA))))) %>% 
+  mutate(TESTperiod = as.factor(TESTperiod)) %>% 
+  mutate(TESTperiod = factor(TESTperiod, levels = c(levels(TESTperiod), "Day 0"))) %>% 
+  mutate(PROTOCOLE = if_else(str_detect(USUBJID, "^01"), "In-patient protocol", "Out-patient protocol")) %>%
+  mutate(PROTOCOLE = as.factor(PROTOCOLE)) %>% 
+  filter(ARM %in% c("CLONIDINE","BUPRENORPHINE/NALOXONE")) %>% 
+  # Issue with patient 02_036130. Filtered again because after join there was one patient that had SCREEN FAILURE on DM4 but got to the final table through LB4 because he had active epoch tests, which doesn't make sense.
+  arrange(VISITNUM)
+
+
+## Final table with statistical test.
+TableURINEfiltered <- TableURINE %>% 
+  filter(LBTEST=="OPIATE", LBORRES=="NEGATIVE") %>% 
+  select("ARM", "TESTperiod", "PROTOCOLE") %>% 
+  mutate(TESTperiod = fct_relevel(TESTperiod, "Day 0", "Day 3 or 4", "Day 7 or 8", "Day 10 or 11", "Day 13 or 14")) 
+  
+TableURINEfilteredGT <- TableURINEfiltered %>% tbl_strata(strata = PROTOCOLE, ~.x %>% 
+                                       tbl_summary(by = ARM, label = TESTperiod ~ "Study duration", statistic = all_continuous() ~ "{n} % ({n} / {N})") %>% 
+                                       # The issue is in the last part of code (N), the % are taken from the total number of rows and not patients.
+                                       # The n_distinct in this case doesn't work because there are multiple combinations for one patient, thus keeping multiple lines per patient and having more than the actual number.
+                                       # Also doesn't work because i didn't select USUBJID in TableURINEfiltered, because if i do it will crash.
+                                       # The closest i got was by using this function, not within gtsummary as it crashes, # TableURINE %>% summarize(n_unique = length(unique(USUBJID))) %>% pull(n_unique)
+                                       # I couldn't find a solution for this within the deadline.
+                                       add_difference()) %>%
+  bold_labels() %>%
+  italicize_levels() %>% 
+  # show_header_names(TableURINEfilteredGT)
+  modify_footnote(
+    all_stat_cols() ~ "Number of patients") %>% 
+  # Modifying the header values N to represent the actual number of patients and not the total rows.
+  modify_header(
+    label = '',
+    stat_1_1 = '**Bup-Nx**, N = 77',
+    stat_2_1 = '**Clonidine**, N = 36',
+    estimate_1 = '**SMD**',
+    stat_1_2 = '**Bup-Nx**, N = 156',
+    stat_2_2 = '**Clonidine**, N = 74',
+    estimate_2 = '**SMD**')
+
+## Highlighting the statistical test results 
+TableURINEfilteredGTobj <- TableURINEfilteredGT %>% 
+  # convert gtsummary table to gt
+  as_gt() %>% 
+  # use gt::tab_style() to shade column
+  gt::tab_style(           
+    style = list(gt::cell_fill(color = "#e1f1fd"), css = "font-size: 12px"),
+    locations = gt::cells_body(columns = c(ci_1,ci_2)))
+
+TableURINEfilteredGTobj
+
+# Useful code for comparisons of different databases.
+# Find values in df1$values that are not in df2$values
+#not_in_df2 <- tabURINE2$USUBJID[!tabURINE2$USUBJID %in% tabDSfilter2$USUBJID]
+#print(not_in_df2)
+# Output: [1] "A" "B"
+
+# Find values in df2$values that are not in df1$values
+#not_in_df1 <- tabDSfilter2$USUBJID[!tabDSfilter2$USUBJID %in% tabURINE2$USUBJID]
+#print(not_in_df1)
+# Output: [1] "F" "G"
+
+
+# One last remaining step is in the table to show the actual N number per patient and not the total of rows
+# I searched everywhere but couldn't find a solution
+# ?add_n
+# ?all_stat_cols
+
+# Useful code for comparisons of different databases.
+# Find values in df1$values that are not in df2$values
+# not_in_df2 <- df1$values[!df1$values %in% df2$values]
+# print(not_in_df2)
+# Output: [1] "A" "B"
+
+# Find values in df2$values that are not in df1$values
+# not_in_df1 <- df2$values[!df2$values %in% df1$values]
+# print(not_in_df1)
+# Output: [1] "F" "G"
+
+# How many patients are in a table.
+# length(unique(dm4$USUBJID))
+# length(unique(lb4$USUBJID))
+
+# https://www.danieldsjoberg.com/gtsummary/articles/tbl_summary.html
 ```
 
 ```{r, echo=TRUE}
