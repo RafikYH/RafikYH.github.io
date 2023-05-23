@@ -1,6 +1,6 @@
 ---
 title: ' Projets tutorés 2 | Devoir 3'
-author: "YAHIA Mohammed Rafik"
+author: "YAHIA Mohammed Rafik | Denis MIANBE | Nihel BEDJOAUI | Lamya DAOUIRI" 
 date: "2023-05-17"
 output:
   prettydoc::html_pretty:
