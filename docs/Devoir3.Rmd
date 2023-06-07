@@ -48,8 +48,9 @@ require(tibble)
 require(stringr)
 require(prettydoc)
 require(rmdformats)
+require(MLeval)
+require(visdat)
 
-#########################################################
 ### DM Table with variable that indicates the ARM. LB Table that indicates drug results and day.
 dm <- read.csv("ascii-data-files nida-ctn-0001-20230318/dm.csv", header = T, dec = ".")
 dm2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/dm.csv", header = T, dec = ".")
@@ -521,6 +522,9 @@ KNNalgo9res <- predict(KNNalgo9, newdata = test, type="raw")
 KNNalgo9
 plot(KNNalgo9)
 confusionMatrix(data = KNNalgo9res, reference = testref$Treatment_Results, positive = "Success")
+
+res2 <- evalm(list(KNNalgo9, model_list1$ada, model_list1$glm, model_list1$xgbTree),
+              gnames=c('Knn','Ada', 'Glm', 'XgbTree'), rlinethick=0.4, plots = "r", showplots = TRUE)
 ```
 
 # Introduction 
@@ -814,6 +818,16 @@ head(Dataset_01)
 #Very useful function that doesn't work unfortunately with Rmarkdown.
 ```
 
+```{r EDA2, fig.align="center", echo=TRUE}
+# Global view of our dataframe and its data class structures
+vis_dat(Dataset_01)
+
+# More emphasis on missing data
+vis_miss(Dataset_01)
+
+# Correlation matrices are done above in the explore function which isn't visible in Rmarkdown
+```
+
 \
 \
 
@@ -894,13 +908,12 @@ confusionMatrix(data = test$Treatment_Results, reference = testref$Treatment_Res
 
 ### RFE
 
-```{r echo=TRUE, warning=FALSE}
+```{r eval=F, echo=T, warning=FALSE}
 ## Feature selection using RFE (Recursive Feature Elimination)
 # Selected variable : ARM, PROTOCOLE
 set.seed(70)
 Control <- rfeControl(functions=rfFuncs, method="cv", number=10) 
 Results <- rfe(DS01_norm[,2:18], DS01_norm[,1], sizes=c(1:16), metric = "RMSE", rfeControl=Control)
-print(Results)
 ```
 
 ```{r echo=FALSE}
@@ -923,8 +936,10 @@ print(RFwithGAM)
 \
 
 ## Model selection
-  
-```{r, echo=TRUE}
+
+### Training multiple models simultaneously
+
+```{r caretList, echo=TRUE, warning=FALSE}
 # Training multiple models
 number <- 5
 repeats <- 4
@@ -944,7 +959,7 @@ model_list1 <- caretList(Treatment_Results ~ protocole_1+arm_1+morphine_1+sb_psi
 
 ```
 
-```{r echo=FALSE}
+```{r ggplot model list, fig.align="center", echo=FALSE, warning=FALSE}
 # Plotting with accuracy the different models: 
 list_of_results <- lapply(my_models, function(x) {model_list1[[x]]$resample})
 df_results <- do.call("bind_rows", list_of_results)
@@ -956,3 +971,907 @@ df_results %>%
   theme_minimal() + 
   coord_flip()
 ```
+
+\
+
+\
+
+### ROC Curve
+
+To make the ROC curve simpler, we first plot it with all of our models, then filter by the top 3 performers, leaving a baseline model "GLM" on the graph to see the difference.
+
+```{r ROC curve code, eval=FALSE, warning=FALSE, include=TRUE}
+res2 <- evalm(list(KNNalgo9, model_list1$ada, model_list1$glm, model_list1$xgbTree),
+              gnames=c('Knn','Ada', 'Glm', 'XgbTree'), rlinethick=0.4, plots = "r", showplots = TRUE)
+```
+
+```{r ROC curve, fig.align="center", echo=FALSE, warning=FALSE}
+knitr::include_graphics("ROC.png")
+```
+
+\
+
+\
+
+### Chosen model : KNN
+
+```{r Chosen algorithm KNN, fig.align="center", echo=TRUE, warning=FALSE}
+## KNN algo
+# All features. (ACC, SENS, SPEC - 73%, 19%, 97%)
+# Feature selec. (ACC, SENS, SPEC - 82%, 42%, 100%)
+set.seed(70)
+KNNalgo9 <- train(Treatment_Results ~ protocole_1+arm_1+age+sex_1+morphine_1, data=train, method="knn", trControl = control,
+                  tuneGrid=data.frame(k=seq(2,10,by=1)), metric = "Accuracy")
+KNNalgo9res <- predict(KNNalgo9, newdata = test, type="raw")
+KNNalgo9
+plot(KNNalgo9)
+confusionMatrix(data = KNNalgo9res, reference = testref$Treatment_Results, positive = "Success")
+```
+
+Next step :  
+
+- feature engineering, modeling the existing data so that it can be more useful in our classification.
+
+- adding more data from the other excel files and see their influence on our algorithms.
+
+- try other CV methods.
+
+\
+
+\
+
+\
+
+# Annex 
+
+## Things learned 
+
+Things learned : 
+
+- No need to change random seed to find an optimal one, if values changes too much it means something is wrong with our model to begin with.
+
+- Large mtry numbers in RF because of levels in factors.
+
+- Different type of CV
+
+- Difference between SBF & RFE
+
+- Kappa metric
+
+- Difference between test accuracy and train accuracy (overfitting)
+
+- Accuracy paradox (high % while positives are not detected)
+
+- AUC is just a number and it can be misleading, you need to see the ROC curve at a given speci/sens
+
+- Never tune model after using the test set, model tuning should always be on the Validation set, as the test set doesn't represent the whole distribution of the population you shouldn't fit the model on it. It should be generalized.
+
+\
+
+## R script
+
+```{r R code, eval=FALSE, warning=FALSE, include=TRUE}
+require(tidyverse)
+require(caret)
+require(caretEnsemble)
+require(missForest)
+require(doParallel)
+require(explore)
+require(plyr)
+require(janitor)
+require(lfactors)
+require(magrittr)
+require(skimr)
+require(tibble)
+require(stringr)
+require(kableExtra)
+require(prettydoc)
+require(rmdformats)
+require(MLeval)
+require(visdat)
+
+
+#########################################################
+### DM Table with variable that indicates the ARM. LB Table that indicates drug results and day.
+dm <- read.csv("ascii-data-files nida-ctn-0001-20230318/dm.csv", header = T, dec = ".")
+dm2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/dm.csv", header = T, dec = ".")
+lb <- read.csv("ascii-data-files nida-ctn-0001-20230318/lb.csv", header = T, dec = ".")
+lb2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/lb.csv", header = T, dec = ".")
+
+#Criteria of success D13 or D14 with negative opoids results.
+# Importing lb database containg opioid test results, and dm with arm.
+dm3 <- dm %>% filter(ARM %in% c("CLONIDINE","BUPRENORPHINE/NALOXONE")) %>% select(USUBJID, ARM)
+dm4 <- dm2 %>% filter(ARM %in% c("CLONIDINE","BUPRENORPHINE/NALOXONE")) %>% select (USUBJID, ARM)
+lb3 <- lb %>% filter(EPOCH == "ACTIVE", VISITNUM %in% c(1:14)) #Missing 5 patients from lb3 compared to dm3 when applying this filter. as they are still in screening epoch but have already been assigned in dm database "01_018076" "01_027452" "01_058918" "01_063935" "01_067193".
+lb4 <- lb2 %>% filter(EPOCH == "ACTIVE", VISITNUM %in% c(1:14)) #Missing 27 patients from lb4 compared to dm4 when applying this filter.
+
+# Adding the ARM column.
+list_df10 = list(lb3, dm3)
+tabURINE <- list_df10 %>% 
+  reduce(full_join, by='USUBJID') %>% 
+  select("USUBJID", "LBTEST", "LBORRES", "LBSTAT", "LBREASND", "LBSPEC", "LBMETHOD", "VISIT", "VISITNUM", "LBDY", "LBDTC", "ARM") #113 patients
+
+list_df11 = list(lb4, dm4)
+tabURINE2 <- list_df11 %>% 
+  reduce(full_join, by='USUBJID') %>% 
+  select("USUBJID", "LBTEST", "LBORRES", "LBSTAT", "LBREASND", "LBSPEC", "LBMETHOD", "VISIT", "VISITNUM", "LBDY", "LBDTC", "ARM") #231 patients
+
+# Merging both tables
+TableURINE <- rbind(tabURINE, tabURINE2)
+
+# Success criteria met for these patients with NEGATIVE test results, others are a Failure.
+TableSuc <- TableURINE %>% 
+  filter(VISITNUM %in% c(13,14) ) %>% 
+  filter(LBTEST == "OPIATE") %>% 
+  filter(LBORRES == "NEGATIVE") %>% 
+  mutate(PROTOCOLE = if_else(str_detect(USUBJID, "^01"), "In-patient protocol", "Out-patient protocol")) %>%
+  mutate(PROTOCOLE = as.factor(PROTOCOLE)) %>% 
+  filter(ARM %in% c("CLONIDINE","BUPRENORPHINE/NALOXONE")) %>% 
+  # Issue with patient 02_036130. Filtered again because after join there was one patient that had SCREEN FAILURE on DM4 but got to the final table through LB4 because he had active epoch tests, which doesn't make sense.
+  arrange(VISITNUM) %>% 
+  select(USUBJID, LBORRES)
+
+# TableAgg from Devoir 1, for more information please refer to Devoir 1.
+dm <- read.csv("ascii-data-files nida-ctn-0001-20230318/dm.csv", header = T, dec = ".")
+tabDM <- dm %>% select(USUBJID, ARM, AGE, SEX)
+vs <- read.csv("ascii-data-files nida-ctn-0001-20230318/vs.csv", header = T, dec = ".")
+tabTEMP <- vs %>% filter(EPOCH=="SCREENING", VSTESTCD=="TEMP") %>% select(USUBJID, VSORRES)
+tabTEMP <- distinct(tabTEMP)
+colnames(tabTEMP) <- c("USUBJID", "TEMP")
+tabRESP <- vs %>% filter(EPOCH=="SCREENING", VSTESTCD=="RESP") %>% select(USUBJID, VSORRES)
+tabRESP <- distinct(tabRESP)
+colnames(tabRESP) <- c("USUBJID", "RESP")
+tabPULSEsitting <- vs %>% filter(EPOCH=="SCREENING", VSPOS=="SITTING", VSTESTCD=="PULSE") %>% select(USUBJID, VSORRES)
+tabPULSEsitting <- distinct(tabPULSEsitting)
+colnames(tabPULSEsitting) <- c("USUBJID", "PULSEsitting")
+tabPULSEstanding <- vs %>% filter(EPOCH=="SCREENING", VSPOS=="STANDING", VSTESTCD=="PULSE") %>% select(USUBJID, VSORRES)
+tabPULSEstanding <- distinct(tabPULSEstanding)
+colnames(tabPULSEstanding) <- c("USUBJID", "PULSEstanding")
+tabSBPsitting <- vs %>% filter(EPOCH=="SCREENING", VSPOS=="SITTING", VSTESTCD=="SBP") %>% select(USUBJID, VSORRES)
+tabSBPsitting <- distinct(tabSBPsitting)
+colnames(tabSBPsitting) <- c("USUBJID", "SBPsitting")
+tabSBPstanding <- vs %>% filter(EPOCH=="SCREENING", VSPOS=="STANDING", VSTESTCD=="SBP") %>% select(USUBJID, VSORRES)
+tabSBPstanding <- distinct(tabSBPstanding)
+colnames(tabSBPstanding) <- c("USUBJID", "SBPstanding")
+tabDBPsitting <- vs %>% filter(EPOCH=="SCREENING", VSPOS=="SITTING", VSTESTCD=="DBP") %>% select(USUBJID, VSORRES)
+tabDBPsitting <- distinct(tabDBPsitting)
+colnames(tabDBPsitting) <- c("USUBJID", "DBPsitting")
+tabDBPstanding <- vs %>% filter(EPOCH=="SCREENING", VSPOS=="STANDING", VSTESTCD=="DBP") %>% select(USUBJID, VSORRES)
+tabDBPstanding <- distinct(tabDBPstanding)
+colnames(tabDBPstanding) <- c("USUBJID", "DBPstanding")
+tabHEIGHT <- vs %>% filter(EPOCH=="SCREENING", VSTESTCD=="HEIGHT") %>% select(USUBJID, VSORRES)
+tabHEIGHT <- distinct(tabHEIGHT)
+colnames(tabHEIGHT) <- c("USUBJID", "HEIGHT") 
+tabWEIGHT <- vs %>% filter(EPOCH=="SCREENING", VSTESTCD=="WEIGHT") %>% select(USUBJID, VSORRES)
+tabWEIGHT <- distinct(tabWEIGHT)
+colnames(tabWEIGHT) <- c("USUBJID", "WEIGHT")
+calculate_bmi <- function(dataframe, height_col, weight_col, bmi_col) {
+  height_meters <- dataframe[[height_col]] * 0.0254
+  weight_kg <- dataframe[[weight_col]] * 0.453592 
+  bmi <- weight_kg / (height_meters^2)
+  dataframe[[bmi_col]] <- bmi 
+  return(dataframe)
+}
+tabBMI <- left_join(tabHEIGHT, tabWEIGHT, by="USUBJID")
+tabBMI <- calculate_bmi(tabBMI, "HEIGHT", "WEIGHT", "BMI") %>% select("USUBJID", "BMI")
+list_df1 = list(tabBMI, tabDBPsitting, tabSBPsitting, tabDBPstanding, tabSBPstanding, tabPULSEsitting, tabPULSEstanding, tabRESP, tabTEMP)
+tabVS <- list_df1 %>% reduce(full_join, by='USUBJID')
+sc <- read.csv("ascii-data-files nida-ctn-0001-20230318/sc.csv", header = T, dec = ".")
+tabMARITAL <- sc %>% filter(SCTESTCD=="MARITAL") %>% select(USUBJID, SCORRES)
+tabMARITAL <- distinct(tabMARITAL)
+colnames(tabMARITAL) <- c("USUBJID", "MARITAL")
+tabEDUC <- sc %>% filter(SCTESTCD=="EDUCYRS") %>% select(USUBJID, SCORRES)
+tabEDUC <- distinct(tabEDUC)
+colnames(tabEDUC) <- c("USUBJID", "EDUCYRS")
+tabEMPLOY30 <- sc %>% filter(SCTESTCD=="EMPLOY30") %>% select(USUBJID, SCORRES)
+tabEMPLOY30 <- distinct(tabEMPLOY30)
+colnames(tabEMPLOY30) <- c("USUBJID", "EMPLOY30")
+tabEMPLOY3Y <- sc %>% filter(SCTESTCD=="EMPLOY3Y") %>% select(USUBJID, SCORRES)
+tabEMPLOY3Y <- distinct(tabEMPLOY3Y)
+colnames(tabEMPLOY3Y) <- c("USUBJID", "EMPLOY3Y")
+tabEMPLOY <- left_join(tabEMPLOY30, tabEMPLOY3Y, by="USUBJID")
+list_df2 = list(tabEDUC, tabEMPLOY, tabMARITAL)
+tabSC <- list_df2 %>% reduce(full_join, by='USUBJID')
+lb <- read.csv("ascii-data-files nida-ctn-0001-20230318/lb.csv", header = T, dec = ".")
+tabMETHADONE <- lb %>% filter(EPOCH=="SCREENING", LBTESTCD=="METHADON", LBMETHOD=="CENTRAL LAB") %>% select(USUBJID, LBORRES)
+tabMETHADONE <- distinct(tabMETHADONE)
+colnames(tabMETHADONE) <- c("USUBJID", "METHADONE")
+tabMORPHINE <- lb %>% filter(EPOCH=="SCREENING", LBTESTCD=="MORPHINE") %>% select(USUBJID, LBORRES)
+tabMORPHINE <- distinct(tabMORPHINE)
+colnames(tabMORPHINE) <- c("USUBJID", "MORPHINE")
+list_df3 = list(tabMETHADONE, tabMORPHINE)
+tabLB <- list_df3 %>% reduce(full_join, by='USUBJID')
+qs <- read.csv("ascii-data-files nida-ctn-0001-20230318/qs.csv", header = T, dec = ".")
+tabQS <- qs %>% filter(EPOCH=="SCREENING", QSTESTCD=="VAS001") %>% select(USUBJID, QSORRES)
+tabQS <- distinct(tabQS)
+colnames(tabQS) <- c("USUBJID", "VAS001")
+list_df4 = list(tabDM, tabSC, tabVS, tabQS, tabLB)
+tabALL_01 <- list_df4 %>% reduce(full_join, by='USUBJID')
+dm2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/dm.csv", header = T, dec = ".")
+tabDM2 <- dm2 %>% select(USUBJID, ARM, AGE, SEX)
+vs2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/vs.csv", header = T, dec = ".")
+tabTEMP2 <- vs2 %>% filter(EPOCH=="SCREENING", VSTESTCD=="TEMP") %>% select(USUBJID, VSORRES)
+tabTEMP2 <- distinct(tabTEMP2)
+colnames(tabTEMP2) <- c("USUBJID", "TEMP")
+tabTEMP2$TEMP[tabTEMP2$TEMP == 999.9] <- 99.9 
+tabRESP2 <- vs2 %>% filter(EPOCH=="SCREENING", VSTESTCD=="RESP") %>% select(USUBJID, VSORRES)
+tabRESP2 <- distinct(tabRESP2)
+colnames(tabRESP2) <- c("USUBJID", "RESP")
+tabPULSEsitting2 <- vs2 %>% filter(EPOCH=="SCREENING", VSPOS=="SITTING", VSTESTCD=="PULSE") %>% select(USUBJID, VSORRES)
+tabPULSEsitting2 <- distinct(tabPULSEsitting2)
+colnames(tabPULSEsitting2) <- c("USUBJID", "PULSEsitting")
+tabPULSEstanding2 <- vs2 %>% filter(EPOCH=="SCREENING", VSPOS=="STANDING", VSTESTCD=="PULSE") %>% select(USUBJID, VSORRES)
+tabPULSEstanding2 <- distinct(tabPULSEstanding2)
+colnames(tabPULSEstanding2) <- c("USUBJID", "PULSEstanding")
+tabSBPsitting2 <- vs2 %>% filter(EPOCH=="SCREENING", VSPOS=="SITTING", VSTESTCD=="SBP") %>% select(USUBJID, VSORRES)
+tabSBPsitting2 <- distinct(tabSBPsitting2)
+colnames(tabSBPsitting2) <- c("USUBJID", "SBPsitting")
+tabSBPstanding2 <- vs2 %>% filter(EPOCH=="SCREENING", VSPOS=="STANDING", VSTESTCD=="SBP") %>% select(USUBJID, VSORRES)
+tabSBPstanding2 <- distinct(tabSBPstanding2)
+colnames(tabSBPstanding2) <- c("USUBJID", "SBPstanding")
+tabDBPsitting2 <- vs2 %>% filter(EPOCH=="SCREENING", VSPOS=="SITTING", VSTESTCD=="DBP") %>% select(USUBJID, VSORRES)
+tabDBPsitting2 <- distinct(tabDBPsitting2)
+colnames(tabDBPsitting2) <- c("USUBJID", "DBPsitting")
+tabDBPstanding2 <- vs2 %>% filter(EPOCH=="SCREENING", VSPOS=="STANDING", VSTESTCD=="DBP") %>% select(USUBJID, VSORRES)
+tabDBPstanding2 <- distinct(tabDBPstanding2)
+colnames(tabDBPstanding2) <- c("USUBJID", "DBPstanding")
+tabHEIGHT <- vs2 %>% filter(EPOCH=="SCREENING", VSTESTCD=="HEIGHT") %>% select(USUBJID, VSORRES)
+tabHEIGHT <- distinct(tabHEIGHT)
+colnames(tabHEIGHT) <- c("USUBJID", "HEIGHT")
+tabWEIGHT <- vs2 %>% filter(EPOCH=="SCREENING", VSTESTCD=="WEIGHT") %>% select(USUBJID, VSORRES)
+tabWEIGHT <- distinct(tabWEIGHT)
+colnames(tabWEIGHT) <- c("USUBJID", "WEIGHT")
+tabHEIGHT2 <- vs2 %>% filter(EPOCH=="SCREENING", VSTESTCD=="HEIGHT") %>% select(USUBJID, VSORRES)
+tabHEIGHT2 <- distinct(tabHEIGHT2)
+colnames(tabHEIGHT2) <- c("USUBJID", "HEIGHT")
+tabHEIGHT2$HEIGHT[tabHEIGHT2$HEIGHT == 715] <- 71
+tabWEIGHT2 <- vs2 %>% filter(EPOCH=="SCREENING", VSTESTCD=="WEIGHT") %>% select(USUBJID, VSORRES)
+tabWEIGHT2 <- distinct(tabWEIGHT2)
+colnames(tabWEIGHT2) <- c("USUBJID", "WEIGHT")
+calculate_bmi <- function(dataframe, height_col, weight_col, bmi_col) {
+  height_meters <- dataframe[[height_col]] * 0.0254
+  weight_kg <- dataframe[[weight_col]] * 0.453592 
+  bmi <- weight_kg / (height_meters^2)  
+  dataframe[[bmi_col]] <- bmi
+  return(dataframe)
+}
+tabBMI2 <- left_join(tabHEIGHT2, tabWEIGHT2, by="USUBJID")
+tabBMI2 <- calculate_bmi(tabBMI2, "HEIGHT", "WEIGHT", "BMI") %>% select("USUBJID", "BMI")
+list_df5 = list(tabBMI2, tabDBPstanding2, tabSBPstanding2, tabDBPsitting2, tabSBPsitting2, tabPULSEstanding2, tabPULSEsitting2, tabRESP2, tabTEMP2)
+tabVS2 <- list_df5 %>% reduce(full_join, by='USUBJID')
+sc2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/sc.csv", header = T, dec = ".")
+tabMARITAL2 <- sc2 %>% filter(SCTESTCD=="MARITAL") %>% select(USUBJID, SCORRES)
+tabMARITAL2 <- distinct(tabMARITAL2)
+colnames(tabMARITAL2) <- c("USUBJID", "MARITAL")
+tabEDUC2 <- sc2 %>% filter(SCTESTCD=="EDUCYRS") %>% select(USUBJID, SCORRES)
+tabEDUC2 <- distinct(tabEDUC2)
+colnames(tabEDUC2) <- c("USUBJID", "EDUCYRS")
+tabEMPLOY302 <- sc2 %>% filter(SCTESTCD=="EMPLOY30") %>% select(USUBJID, SCORRES)
+tabEMPLOY302 <- distinct(tabEMPLOY302)
+colnames(tabEMPLOY302) <- c("USUBJID", "EMPLOY30")
+tabEMPLOY3Y2 <- sc2 %>% filter(SCTESTCD=="EMPLOY3Y") %>% select(USUBJID, SCORRES)
+tabEMPLOY3Y2 <- distinct(tabEMPLOY3Y2)
+colnames(tabEMPLOY3Y2) <- c("USUBJID", "EMPLOY3Y")
+tabEMPLOY2 <- left_join(tabEMPLOY302, tabEMPLOY3Y2, by="USUBJID")
+list_df6 = list(tabEDUC2, tabEMPLOY2, tabMARITAL2)
+tabSC2 <- list_df6 %>% reduce(full_join, by='USUBJID')
+lb2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/lb.csv", header = T, dec = ".")
+tabMETHADONE2 <- lb2 %>% filter(EPOCH=="SCREENING", LBTESTCD=="METHADON", LBMETHOD=="CENTRAL LAB") %>% select(USUBJID, LBORRES)
+tabMETHADONE2 <- distinct(tabMETHADONE2)
+colnames(tabMETHADONE2) <- c("USUBJID", "METHADONE")
+tabMORPHINE2 <- lb2 %>% filter(EPOCH=="SCREENING", LBTESTCD=="MORPHINE") %>% select(USUBJID, LBORRES)
+tabMORPHINE2 <- distinct(tabMORPHINE2)
+colnames(tabMORPHINE2) <- c("USUBJID", "MORPHINE") 
+list_df7 = list(tabMETHADONE2, tabMORPHINE2)
+tabLB2 <- list_df7 %>% reduce(full_join, by='USUBJID')
+qs2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/qs.csv", header = T, dec = ".")
+tabQS2 <- qs2 %>% filter(EPOCH=="SCREENING", QSTESTCD=="VAS001") %>% select(USUBJID, QSORRES)
+tabQS2 <- distinct(tabQS2)
+colnames(tabQS2) <- c("USUBJID", "VAS001")
+list_df8 = list(tabDM2, tabSC2, tabVS2, tabQS2, tabLB2)
+tabALL_02 <- list_df8 %>% reduce(full_join, by='USUBJID')
+TableALL <- rbind(tabALL_02, tabALL_01)
+TableALL$VAS001 <- as.numeric(TableALL$VAS001)
+
+TableAgg <- TableALL %>%
+  group_by(USUBJID, ARM, SEX, EDUCYRS, EMPLOY30, EMPLOY3Y, MARITAL, METHADONE, MORPHINE) %>%
+  dplyr::summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>% 
+  mutate(dplyr::across(everything(), ~replace_na(.x, NA)))
+
+TableAgg <- distinct(TableAgg) %>% 
+  filter(!(ARM == "")) %>% 
+  filter(!(ARM == "SCREEN FAILURE"))
+TableAgg$ARM <- as.factor(TableAgg$ARM)
+TableAgg$SEX <- as.factor(TableAgg$SEX)
+TableAgg$EDUCYRS <- as.numeric(TableAgg$EDUCYRS)
+TableAgg$EMPLOY30 <- as.factor(TableAgg$EMPLOY30)
+TableAgg$EMPLOY3Y <- as.factor(TableAgg$EMPLOY3Y)
+TableAgg$MARITAL <- as.factor(TableAgg$MARITAL)
+TableAgg$METHADONE <- as.factor(TableAgg$METHADONE)
+TableAgg$MORPHINE <- as.factor(TableAgg$MORPHINE)
+TableAgg <- as.data.frame(TableAgg) 
+
+
+# Merging this table with the initial table we have from Devoir 1 
+# Now we have the table with Success 1 or Failure 0 in LBORRES column.
+list_df20 = list(TableAgg, TableSuc)
+Dataset_01 <- list_df20 %>% 
+  reduce(full_join, by='USUBJID') %>% 
+  mutate(PROTOCOLE = if_else(str_detect(USUBJID, "^01"), "In-patient protocol", "Out-patient protocol")) %>%
+  mutate(PROTOCOLE = as.factor(PROTOCOLE)) %>% 
+  mutate(LBORRES = if_else(is.na(LBORRES), "0", LBORRES)) %>% 
+  mutate(LBORRES = if_else(str_detect(LBORRES, "NEGATIVE"), "1", "0")) %>% 
+  mutate(LBORRES = as.factor(LBORRES)) %>% 
+  mutate(EDUCYRS = as.factor(EDUCYRS))
+
+# EVA
+# Trends to check : Protocole, arm, sex & age effect on Treatement results LBORRES
+# explore(DS01_norm)
+
+# Preparing the dataset to apply ML algorithms.
+# filling NA, One hot encoding, Normalizing
+skim(Dataset_01)
+Dataset_01_treated <- Dataset_01 %>% 
+  select(LBORRES, USUBJID, PROTOCOLE, ARM, AGE, SEX, BMI, METHADONE, MORPHINE, VAS001, EDUCYRS, EMPLOY30, EMPLOY3Y, MARITAL, DBPsitting, SBPsitting, PULSEsitting, RESP, TEMP) %>% 
+  mutate(PROTOCOLE = if_else(str_detect(PROTOCOLE, "^In"), "0", "1")) %>% 
+  mutate(PROTOCOLE = as.factor(PROTOCOLE)) %>% 
+  mutate(ARM = if_else(str_detect(ARM, "^BUP"), "0", "1")) %>% 
+  mutate(ARM = as.factor(ARM)) %>% 
+  mutate(SEX = if_else(str_detect(SEX, "F"), "0", "1")) %>% 
+  mutate(SEX = as.factor(SEX)) %>% 
+  mutate(METHADONE = if_else(str_detect(METHADONE, "^NEG"), "0", "1")) %>% 
+  mutate(METHADONE = as.factor(METHADONE)) %>% 
+  mutate(MORPHINE = if_else(str_detect(MORPHINE, "^NEG"), "0", "1")) %>% 
+  mutate(MORPHINE = as.factor(MORPHINE))
+
+# Removing NA # https://www.kaggle.com/code/lmorgan95/missforest-the-best-imputation-algorithm/report
+set.seed(70)
+Dataset_IMP <- subset(Dataset_01_treated, select = -c(LBORRES, USUBJID))
+imp_missForest <- missForest(Dataset_IMP, maxiter = 10, verbose = T)
+Dataset_IMP <- imp_missForest$ximp
+# USUBJID Not needed as we already extracted arm information in a seperate column
+LBORRES <- Dataset_01_treated[, 1]
+Dataset_01_treated <- cbind(LBORRES, Dataset_IMP)
+
+# Normalizing values 
+preproc <- preProcess(Dataset_01_treated, method = "range")
+DS01_norm <- predict(preproc, Dataset_01_treated)
+
+#DS01_norm$LBORRES <- revalue(DS01_norm$LBORRES, c("0"="Zero", "1"="One"))
+#DS01_norm$LBORRES <- relevel(DS01_norm$LBORRES, ref = "One")
+
+# Dummy variables
+dmy <- dummyVars(" ~ .", data = DS01_norm, fullRank=T)
+DS01_norm_dummy <- data.frame(predict(dmy, newdata = DS01_norm)) #FullRank to choose one dummy for columns that has 2 values, ex GENDER.
+DS01_norm_dummy <- DS01_norm_dummy %>% clean_names()
+colnames(DS01_norm_dummy)[colnames(DS01_norm_dummy) == "lborres_1"] <- "Treatment_Results"
+DS01_norm_dummy$Treatment_Results <- lfactor(DS01_norm_dummy$Treatment_Results, levels = 0:1, labels = c("Failure", "Success"))
+DS01_norm_dummy$Treatment_Results <- as.factor(DS01_norm_dummy$Treatment_Results)
+
+set.seed(70)
+index <- createDataPartition(DS01_norm_dummy$Treatment_Results, p = 0.80, list = FALSE)
+train <- DS01_norm_dummy[index,]
+test <- DS01_norm_dummy[-index,]
+testref <- DS01_norm_dummy[-index,]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# If our prediction are all "Failure" we get an Accuracy of 69% (Accuracy paradox).
+# This should be the baseline we improve upon in both Accuracy and Sensitivity.
+# https://deepchecks.com/how-to-check-the-accuracy-of-your-machine-learning-model/
+test$Treatment_Results = "Failure"
+test$Treatment_Results <- lfactor(test$Treatment_Results, levels = 0:1, labels = c("Failure", "Success"))
+confusionMatrix(data = test$Treatment_Results, reference = testref$Treatment_Results, positive = "Success")
+
+
+# https://jtr13.github.io/cc21fall2/feature-selection-in-r.html
+## Feature selection using RFE (Recursive Feature Elimination)
+# Selected variable : ARM, PROTOCOLE
+set.seed(70)
+Control <- rfeControl(functions=rfFuncs, method="cv", number=10) 
+Results <- rfe(DS01_norm[,2:18], DS01_norm[,1], sizes=c(1:16), metric = "Kappa", rfeControl=Control)
+print(Results)
+predictors(Results)
+plot(Results)
+
+## Feature selection using SBF (Selection By Filtering)
+# Selected variable : ARM (100%), MORPHINE (100%), PROTOCOLE (100%), SBPsitting (100%), PULSEsitting (60%)
+# https://stackoverflow.com/questions/39922359/does-sbf-use-metric-argument-to-optimize-model
+DS01_norm$LBORRES <- as.numeric(DS01_norm$LBORRES)
+DS01_norm$PROTOCOLE <- as.numeric(DS01_norm$PROTOCOLE)
+DS01_norm$ARM <- as.numeric(DS01_norm$ARM)
+DS01_norm$SEX <- as.numeric(DS01_norm$SEX)
+DS01_norm$METHADONE <- as.numeric(DS01_norm$METHADONE)
+DS01_norm$MORPHINE <- as.numeric(DS01_norm$MORPHINE)
+
+numeric_cols <- DS01_norm %>% select_if(is.numeric)
+
+numeric_cols$LBORRES <- numeric_cols$LBORRES - 1
+numeric_cols$PROTOCOLE <- numeric_cols$PROTOCOLE - 1 
+numeric_cols$ARM <- numeric_cols$ARM - 1
+numeric_cols$SEX <- numeric_cols$SEX - 1
+numeric_cols$METHADONE <- numeric_cols$METHADONE - 1
+numeric_cols$MORPHINE <- numeric_cols$MORPHINE -1
+
+numeric_cols$LBORRES <- as.factor(numeric_cols$LBORRES)
+
+
+RFwithGAM <- sbf(numeric_cols[,2:14], numeric_cols[,1],
+                 sbfControl = sbfControl(functions = rfSBF,
+                                         verbose = FALSE,
+                                         method = "cv"))
+RFwithGAM
+
+
+## Algorithm selection
+# https://datascience.stackexchange.com/questions/10745/which-of-the-180-algorithms-in-rs-caret-package-are-feasible
+all_model <- modelLookup()
+classification_model <- all_model %>% 
+  filter(forClass == TRUE, !duplicated(model))
+
+# Packages that will be used for training these models: 
+all_packages <- sapply(classification_model$model, 
+                       function(x) {
+                         x %>% getModelInfo() %>% .[[1]] %>% .[["library"]]}) %>% unlist() 
+
+all_packages <- all_packages[!duplicated(all_packages)]
+
+your_packages <- installed.packages() %>% 
+  as.data.frame() %>% 
+  pull(Package) %>% 
+  as.character()
+
+cannot_installed <- c("adaptDA", "CHAID", "sparsediscrim", "elmNN", "gpls", 
+                      "logicFS", "FCNN4R", "mxnet", "vbmp")
+
+ml_not_used <- c("amdai", "chaid", "dda", "elm", "gpls", 
+                 "logicBag", "mlpSGD1", "mxnet", "vbmpRadial")
+
+registerDoParallel(cores = detectCores() - 1)
+additional_package <- all_packages[!all_packages %in% your_packages]
+additional_package <- all_packages[!all_packages %in% cannot_installed]
+additional_package %>% length()
+should_use_ml <- classification_model %>% 
+  filter(!model %in% ml_not_used)
+all_model <- should_use_ml$model
+my_models <- all_model[c(1,51, 52, 130, 161, 182)]
+
+# Training multiple models
+# https://github.com/tobigithub/caret-machine-learning/blob/master/caret-cv/HAR-all-CV-methods.R
+number <- 5
+repeats <- 4
+control <- trainControl(method = "cv", 
+                        classProbs = TRUE, 
+                        savePredictions = "final",
+                        index = createResample(train$Treatment_Results, repeats*number), 
+                        summaryFunction = multiClassSummary, 
+                        allowParallel = TRUE)
+set.seed(70)
+
+model_list1 <- caretList(Treatment_Results ~ protocole_1+arm_1+morphine_1+sb_psitting+puls_esitting, 
+                         data = train,
+                         trControl = control,
+                         metric = "Accuracy", 
+                         methodList = my_models)
+
+# Plotting with accuracy the different models: 
+list_of_results <- lapply(my_models, function(x) {model_list1[[x]]$resample})
+df_results <- do.call("bind_rows", list_of_results)
+df_results %<>% mutate(Model = lapply(my_models, function(x) {rep(x, number*repeats)}) %>% unlist())
+df_results %>% 
+  select(Accuracy, Model) %>% 
+  ggplot(aes(Model, Accuracy, fill = Model, color = Model)) + 
+  geom_boxplot(show.legend = FALSE, alpha = 0.3) + 
+  theme_minimal() + 
+  coord_flip()
+
+
+
+## Random forest
+# All features resulting in not so optimal results. (ACC, SENS, SPEC - 76%, 38%, 93%)
+# With features selection, we get optimal results. (ACC, SENS, SPEC - 80%, 47%, 95%)
+# https://datascience.stackexchange.com/questions/28426/train-accuracy-vs-test-accuracy-vs-confusion-matrix
+RFmodel <- predict(model_list1$rf, newdata = test, type="raw")
+model_list1$rf #73% accuracy, difference between train accuracy and test acc is the overfitting
+confusionMatrix(data = RFmodel, reference = testref$Treatment_Results, positive = "Success")
+
+
+## Logistic regression
+# All features. (ACC, SENS, SPEC - 72%, 28%, 91%)
+# Feature selec. (ACC, SENS, SPEC - 78%, 42%, 93%)
+set.seed(70)
+LRmodel <- predict(model_list1$glm, newdata = test, type="raw")
+model_list1$glm #77% training accuracy
+confusionMatrix(data = LRmodel, reference = testref$Treatment_Results, positive = "Success")
+
+
+## xgbTree 
+# All features. (ACC, SENS, SPEC - 67%, 23%, 87%)
+# Feature selec. (ACC, SENS, SPEC - 76%, 38%, 93%)
+set.seed(70)
+xgbTreemodel <- predict(model_list1$xgbTree, newdata = test, type="raw")
+model_list1$xgbTree #75% training accuracy
+confusionMatrix(data = xgbTreemodel, reference = testref$Treatment_Results, positive = "Success")
+
+## glmboost 
+# All features. (ACC, SENS, SPEC - 67%, 23%, 87%)
+# Feature selec. (ACC, SENS, SPEC - 77%, 42%, 93%)
+set.seed(70)
+glmboostmodel <- predict(model_list1$glmboost, newdata = test, type="raw")
+model_list1$glmboost #77% training accuracy
+confusionMatrix(data = glmboostmodel, reference = testref$Treatment_Results, positive = "Success")
+
+
+## svmLinear
+# All features. (ACC, SENS, SPEC - 67%, 23%, 87%)
+# Feature selec. (ACC, SENS, SPEC - 77%, 42%, 93%)
+set.seed(70)
+svmmodel <- predict(model_list1$svmLinear, newdata = test, type="raw")
+model_list1$svmLinear #77% training accuracy
+confusionMatrix(data = svmmodel, reference = testref$Treatment_Results, positive = "Success")
+
+
+## ada
+# All features. (ACC, SENS, SPEC - 67%, 23%, 87%)
+# Feature selec. (ACC, SENS, SPEC - 76%, 28%, 97%)
+set.seed(70)
+adamodel <- predict(model_list1$ada, newdata = test, type="raw")
+model_list1$ada #76% training accuracy
+confusionMatrix(data = adamodel, reference = testref$Treatment_Results, positive = "Success")
+m2 = data.frame(adamodel, testref$Treatment_Results)
+
+
+## KNN algo
+# All features. (ACC, SENS, SPEC - 73%, 19%, 97%)
+# Feature selec. (ACC, SENS, SPEC - 82%, 42%, 100%)
+set.seed(70)
+KNNalgo9 <- train(Treatment_Results ~ protocole_1+arm_1+age+sex_1+morphine_1, data=train, method="knn", trControl = control,
+                  tuneGrid=data.frame(k=seq(2,10,by=1)), metric = "Accuracy")
+KNNalgo9res <- predict(KNNalgo9, newdata = test, type="raw")
+KNNalgo9
+plot(KNNalgo9)
+confusionMatrix(data = KNNalgo9res, reference = testref$Treatment_Results, positive = "Success")
+
+
+#https://alonhzn.medium.com/the-fallacy-of-an-roc-curve-on-a-test-set-c96d8fdf774
+#https://discuss.boardinfinity.com/t/should-one-build-roc-curve-on-train-data-or-test-data/8039
+#https://stats.stackexchange.com/questions/19048/what-is-the-difference-between-test-set-and-validation-set 
+#https://cran.r-project.org/web/packages/MLeval/vignettes/introduction.pdf
+# Running ROCAUC on test or train? check links above
+res2 <- evalm(list(KNNalgo9, model_list1$ada, model_list1$glm, model_list1$xgbTree),
+              gnames=c('Knn','Ada', 'Glm', 'XgbTree'), rlinethick=0.4, plots = "r", showplots = TRUE)
+
+res2$cc
+
+
+# https://stackoverflow.com/questions/62827779/roc-curve-for-the-testing-set-using-caret-package
+# predict from several models
+predicted_xgb <- predict(model_xgb, newdata =  testData3, type = "prob")
+predicted_adaboost <- predict(model_adaboost, newdata =  testData3, type = "prob")
+predicted_rf <- predict(model_rf, newdata =  testData3, type = "prob")
+
+# append necessary columns
+predicted_xgb$obs <- testData3$pred_group
+predicted_xgb$Group <- "xgb"
+predicted_adaboost$obs <- testData3$pred_group
+predicted_adaboost$Group <- "adaboost"
+predicted_rf$obs <- testData3$pred_group
+predicted_rf$Group <- "rf"
+
+#combine
+combo_df <- rbind(predicted_xgb, predicted_adaboost, predicted_rf)
+
+#evaluate
+test2 <- evalm(combo_df)
+
+
+
+?evalm
+Sonar <- as.data.frame(Sonar)
+# Ensembling models : 
+# https://cran.r-project.org/web/packages/caretEnsemble/vignettes/caretEnsemble-intro.html
+model_list <- caretList(Treatment_Results ~ protocole_1+arm_1+morphine_1+sb_psitting+puls_esitting, data=train,
+                        trControl=control,
+                        methodList=c("glm", "rf"))
+
+Combinedmodel <- predict(model_list, newdata = test)
+model_list #73% accuracy, difference between train accuracy and test acc is the overfitting
+confusionMatrix(data = Combinedmodel, reference = testref$Treatment_Results, positive = "Success")
+Combinedmodel
+
+modelCor(resamples(model_list))
+
+my_control <- trainControl(
+  method="boot",
+  number=repeats*number,
+  savePredictions="final",
+  classProbs=TRUE,
+  index=createResample(train$Treatment_Results, repeats*number),
+  summaryFunction=twoClassSummary
+)
+
+glm_ensemble <- caretStack(
+  model_list,
+  method="glm",
+  metric="ROC",
+  trControl=my_control)
+
+model_preds2 <- model_preds
+model_preds2$ensemble <- predict(glm_ensemble, newdata=testing, type="prob")
+CF <- coef(glm_ensemble$ens_model$finalModel)[-1]
+colAUC(model_preds2, testing$Class)
+
+########################################################
+# Adding more data from different tables : 
+
+###CM Table with variables xxx
+#EPOCH, CMDOSU(grams), VISIT, VISITNUM(which refered to CMSPID day taken medication all were 0 baseline), had one unique when filter was applied so i deleted them
+cm <- read.csv("ascii-data-files nida-ctn-0001-20230318/cm.csv", header = T, dec = ".")
+
+tabCM <- cm %>% 
+  filter(EPOCH=="SCREENING") %>% 
+  select(USUBJID, CMTRT, CMINDC, CMDOSTOT, CMSPID)
+#mutate(CMDOSTOT = replace_na(CMDOSTOT, 0.000)) %>% 
+#mutate(CMSPID = replace_na(CMSPID, 0))
+
+tabCM$CMSPID <- as.factor(tabCM$CMSPID)
+
+tabCM$CMTRT[tabCM$CMTRT == "APPLESOL"] <- "APLISOL"
+tabCM$CMTRT[tabCM$CMTRT == "APPLISOC"] <- "APLISOL"
+tabCM$CMTRT[tabCM$CMTRT == "APPLISOL"] <- "APLISOL"
+tabCM$CMTRT[tabCM$CMTRT == "CHONIDINE"] <- "CLONIDINE"
+tabCM$CMTRT[tabCM$CMTRT == "CLONDINE"] <- "CLONIDINE"
+tabCM$CMTRT[tabCM$CMTRT == "CLONIDINE PATCH"] <- "CLONIDINE"
+tabCM$CMTRT[tabCM$CMTRT == "ASPRIN"] <- "ASPIRIN"
+tabCM$CMTRT[tabCM$CMTRT == "IBP"] <- "IBUPROFEN"
+tabCM$CMTRT[tabCM$CMTRT == "IMNODIUM"] <- "IMODIUM"
+tabCM$CMTRT[tabCM$CMTRT == "KKAOPECTATE"] <- "KAOPECTATE"
+tabCM$CMTRT[tabCM$CMTRT == "multivitamin"] <- "MULTIVITAMIN"
+tabCM$CMTRT[tabCM$CMTRT == "MULTI VITAMIN"] <- "MULTIVITAMIN"
+tabCM$CMTRT[tabCM$CMTRT == "MVI"] <- "MULTIVITAMIN"
+tabCM$CMTRT[tabCM$CMTRT == "MOTRIN (IBUPROFEN)"] <- "IBUPROFEN"
+tabCM$CMTRT[tabCM$CMTRT == "MOTRIN"] <- "IBUPROFEN"
+tabCM$CMTRT[tabCM$CMTRT == "PHENOBARBUTAL"] <- "PHENOBARBITAL"
+tabCM$CMTRT[tabCM$CMTRT == "PHENOBARB"] <- "PHENOBARBITAL"
+tabCM$CMTRT[tabCM$CMTRT == "PHENOBABITAL"] <- "PHENOBARBITAL"
+tabCM$CMTRT[tabCM$CMTRT == "PPHEUOBARBITAL"] <- "PHENOBARBITAL"
+tabCM$CMTRT[tabCM$CMTRT == "PHIENOBOIBI TAL"] <- "PHENOBARBITAL"
+tabCM$CMTRT[tabCM$CMTRT == "PHEUOBORBITAL"] <- "PHENOBARBITAL"
+tabCM$CMTRT[tabCM$CMTRT == "ROBOXIN"] <- "ROBAXIN"
+tabCM$CMTRT[tabCM$CMTRT == "ROBXIN"] <- "ROBAXIN"
+tabCM$CMTRT[tabCM$CMTRT == "TRAZADONE"] <- "TRAZODONE"
+tabCM$CMTRT[tabCM$CMTRT == "TRAZEDONE"] <- "TRAZODONE"
+tabCM$CMTRT[tabCM$CMTRT == "TYLENOL PM ES"] <- "TYLENOL"
+
+tabCM$CMINDC[tabCM$CMINDC == "ABDOMINAL CRAMPS"] <- "ABD CRAMPS"
+tabCM$CMINDC[tabCM$CMINDC == "APASM"] <- "SPASM"
+tabCM$CMINDC[tabCM$CMINDC == "BODY PAIN"] <- "BODY ACHES"
+tabCM$CMINDC[tabCM$CMINDC == "DIARREHEA"] <- "DIARRHEA"
+tabCM$CMINDC[tabCM$CMINDC == "DIARREAH"] <- "DIARRHEA"
+tabCM$CMINDC[tabCM$CMINDC == "MUSCLE ACHE"] <- "MUSCLE CRAMPS"
+tabCM$CMINDC[tabCM$CMINDC == "MUSCLE PAIN WITHDRAWAL"] <- "MUSCLE CRAMPS"
+tabCM$CMINDC[tabCM$CMINDC == "MUSCLE PAIN"] <- "MUSCLE CRAMPS"
+tabCM$CMINDC[tabCM$CMINDC == "NUTRITIONAL SUPPL."] <- "NUTRITIONAL SUPPL"
+tabCM$CMINDC[tabCM$CMINDC == "NUTRITION"] <- "NUTRITIONAL SUPPL"
+tabCM$CMINDC[tabCM$CMINDC == "SUPPLIMENT"] <- "NUTRITIONAL SUPPL"
+tabCM$CMINDC[tabCM$CMINDC == "weight loss"] <- "NUTRITIONAL SUPPL"
+tabCM$CMINDC[tabCM$CMINDC == ""] <- "NUTRITIONAL SUPPL"
+tabCM$CMINDC[tabCM$CMINDC == "OOPIATE WD"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WITDRAW"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WDSX"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WD SX"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WD SPASM"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WP"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WO"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WITHOUHT"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "OPIATE WITHDRAWAL"] <- "OPIATE WD"
+tabCM$CMINDC[tabCM$CMINDC == "EPS PREVENTION"] <- "PREVENT EPS"
+tabCM$CMINDC[tabCM$CMINDC == "SPASMS"] <- "SPASM"
+tabCM$CMINDC[tabCM$CMINDC == "SLEEPLESSNESS"] <- "INSOMNIA"
+tabCM$CMINDC[tabCM$CMINDC == "SLEEP"] <- "INSOMNIA"
+tabCM$CMINDC[tabCM$CMINDC == "TB SCREEN"] <- "TB SCREENING"
+tabCM$CMINDC[tabCM$CMINDC == "TB SKIN TEST"] <- "TB SCREENING"
+tabCM$CMINDC[tabCM$CMINDC == "TB TESTING"] <- "TB SCREENING"
+tabCM$CMINDC[tabCM$CMINDC == "BCP"] <- "BACK PAIN"
+tabCM$CMINDC[tabCM$CMINDC == "ANXIETY  RESTLESSNESS"] <- "ANXIETY"
+
+skim(tabCM)
+
+###CM Table with variables xxx
+#EPOCH CMDOSU(grams), VISIT, VISITNUM(which refered to CMSPID day taken medication all were 0 baseline), had one unique when filter was applied so i deleted them
+cm2 <- read.csv("ascii-data-files nida-ctn-0002-20230318/cm.csv", header = T, dec = ".")
+
+tabCM2 <- cm2 %>% 
+  filter(EPOCH=="SCREENING") %>% 
+  select(USUBJID, CMTRT, CMINDC, CMDOSTOT, CMSPID)
+#mutate(CMDOSTOT = replace_na(CMDOSTOT, 0.000)) %>% 
+#mutate(CMSPID = replace_na(CMSPID, 0))
+
+tabCM2$CMSPID <- as.factor(tabCM2$CMSPID)
+
+tabCM2$CMTRT[tabCM2$CMTRT == "ACETAMINOPHEN 300MG CODEINE PH"] <- "ACETAMINOPHEN"
+tabCM2$CMTRT[tabCM2$CMTRT == "ACETAMINOPHEN 325 OXYCODON S"] <- "ACETAMINOPHEN"
+tabCM2$CMTRT[tabCM2$CMTRT == "ACETASALCYCLIC ACID"] <- "ACETYLSALICYLIC ACID"
+tabCM2$CMTRT[tabCM2$CMTRT == "ACETAMINOPHEN 750MG HYDROCODON"] <- "ACETAMINOPHEN"
+tabCM2$CMTRT[tabCM2$CMTRT == "ACETAMINOPHEN 500 MG DIPHENHYD"] <- "ACETAMINOPHEN"
+tabCM2$CMTRT[tabCM2$CMTRT == "albuterol inhaler"] <- "ALBUTEROL"
+tabCM2$CMTRT[tabCM2$CMTRT == "ALBUTEROL INH"] <- "ALBUTEROL"
+tabCM2$CMTRT[tabCM2$CMTRT == "aspirin/caffiene/tylenol"] <- "ASPIRIN"
+tabCM2$CMTRT[tabCM2$CMTRT == "CITALOPRAM HYDROBROMIDE"] <- "CITALOPRAM"
+tabCM2$CMTRT[tabCM2$CMTRT == "Citalopram (Celexa)"] <- "CITALOPRAM"
+tabCM2$CMTRT[tabCM2$CMTRT == "Bupropion (Wellbutrin)"] <- "BUPROPION"
+tabCM2$CMTRT[tabCM2$CMTRT == "Diazepam (Valium)"] <- "DIAZEPAM"
+tabCM2$CMTRT[tabCM2$CMTRT == "diazepam"] <- "DIAZEPAM"
+tabCM2$CMTRT[tabCM2$CMTRT == "HYDROCODONE ACETAMINOPHEN LORT"] <- "HYDROCODONE"
+tabCM2$CMTRT[tabCM2$CMTRT == "HYDROCODONE 5 MG ACETAMINOPHEN"] <- "HYDROCODONE"
+tabCM2$CMTRT[tabCM2$CMTRT == "ibuprofen"] <- "IBUPROFEN"
+tabCM2$CMTRT[tabCM2$CMTRT == "iron"] <- "IRON PILLS"
+tabCM2$CMTRT[tabCM2$CMTRT == "LOPERAMIDE HYDROCHLORIDE AD"] <- "LOPERAMIDE"
+tabCM2$CMTRT[tabCM2$CMTRT == "MULTIVITAMEN"] <- "MULTIVITAMIN"
+tabCM2$CMTRT[tabCM2$CMTRT == "OXYCODONE SR"] <- "OXYCODONE 5MG ACETAMINOPHEN"
+tabCM2$CMTRT[tabCM2$CMTRT == "paxil"] <- "PAXIL"
+tabCM2$CMTRT[tabCM2$CMTRT == "prozac"] <- "PROZAC"
+tabCM2$CMTRT[tabCM2$CMTRT == "Tylenol PM"] <- "TYLENOL PM"
+tabCM2$CMTRT[tabCM2$CMTRT == "VIT C"] <- "MULTIVITAMIN"
+tabCM2$CMTRT[tabCM2$CMTRT == "visteril"] <- "Visteril"
+tabCM2$CMTRT[tabCM2$CMTRT == "VITAMINS HERBAL"] <- "MULTIVITAMIN"
+tabCM2$CMTRT[tabCM2$CMTRT == "VIT E"] <- "MULTIVITAMIN"
+tabCM2$CMTRT[tabCM2$CMTRT == "IRON PILLS"] <- "MULTIVITAMIN"
+
+tabCM2$CMINDC[tabCM2$CMINDC == "ABDOM CRAMPS"] <- "ABD CRAMPS"
+tabCM2$CMINDC[tabCM2$CMINDC == "Anxiety/detox"] <- "ANXIETY"
+tabCM2$CMINDC[tabCM2$CMINDC == "ANXIETY PANIC"] <- "ANXIETY"
+tabCM2$CMINDC[tabCM2$CMINDC == "ANXIETY INSOMNIA"] <- "INSOMNIA"
+tabCM2$CMINDC[tabCM2$CMINDC == "Asthma"] <- "ASTHMA"
+tabCM2$CMINDC[tabCM2$CMINDC == "asthma"] <- "ASTHMA"
+tabCM2$CMINDC[tabCM2$CMINDC == "BACKACHE"] <- "BACK PAIN"
+tabCM2$CMINDC[tabCM2$CMINDC == "back pain"] <- "BACK PAIN"
+tabCM2$CMINDC[tabCM2$CMINDC == "bipolar"] <- "BIPOLAR"
+tabCM2$CMINDC[tabCM2$CMINDC == "depression"] <- "DEPRESSION"
+tabCM2$CMINDC[tabCM2$CMINDC == "DIARREHA"] <- "DIARRHEA"
+tabCM2$CMINDC[tabCM2$CMINDC == "headache"] <- "HEADACHE"
+tabCM2$CMINDC[tabCM2$CMINDC == "HEART BURN"] <- "HEARTBURN"
+tabCM2$CMINDC[tabCM2$CMINDC == "infection"] <- "INFECTION"
+tabCM2$CMINDC[tabCM2$CMINDC == "insomnia"] <- "INSOMNIA"
+tabCM2$CMINDC[tabCM2$CMINDC == "MUSCLE SPASMS"] <- "SPASM"
+tabCM2$CMINDC[tabCM2$CMINDC == "shoulder muscle spasm"] <- "SPASM"
+tabCM2$CMINDC[tabCM2$CMINDC == "SLEEP DEPRESSION"] <- "DEPRESSION"
+tabCM2$CMINDC[tabCM2$CMINDC == "ULCER"] <- "ULCERS"
+tabCM2$CMINDC[tabCM2$CMINDC == "wd sx (anxiety)"] <- "WITHDRAWAL"
+tabCM2$CMINDC[tabCM2$CMINDC == "wd sx"] <- "WITHDRAWAL"
+tabCM2$CMINDC[tabCM2$CMINDC == "WD NAUSEA"] <- "WITHDRAWAL"
+tabCM2$CMINDC[tabCM2$CMINDC == "withdrawls"] <- "WITHDRAWAL"
+tabCM2$CMINDC[tabCM2$CMINDC == "WITHDRAWL"] <- "WITHDRAWAL"
+tabCM2$CMINDC[tabCM2$CMINDC == "withdrawl"] <- "WITHDRAWAL"
+tabCM2$CMINDC[tabCM2$CMINDC == "ZAFECTION"] <- "INFECTION"
+
+#Binding both tables
+TableCM <- bind_rows(tabCM, tabCM2)
+TableCM$CMTRT[TableCM$CMTRT == "ASCORBIC ACID"] <- "MULTIVITAMIN"
+TableCM$CMTRT[TableCM$CMTRT == "B 12"] <- "MULTIVITAMIN"
+TableCM$CMTRT[TableCM$CMTRT == "CHLORPHENIRAMINE MALEATE"] <- "CHLORPHENIRAMINE"
+TableCM$CMTRT[TableCM$CMTRT == "Clonidine 0.3 mg"] <- "CLONIDINE"
+TableCM$CMTRT[TableCM$CMTRT == "clonidine"] <- "CLONIDINE"
+TableCM$CMTRT[TableCM$CMTRT == "depakote"] <- "DEPAKOTE"
+TableCM$CMTRT[TableCM$CMTRT == "FOLIC ACID"] <- "MULTIVITAMIN"
+TableCM$CMTRT[TableCM$CMTRT == "IMMODIUM"] <- "IMODIUM"
+TableCM$CMTRT[TableCM$CMTRT == "IBUPROFEN 200MG HYDROCODONE 7"] <- "IBUPROFEN"
+TableCM$CMTRT[TableCM$CMTRT == "keflex"] <- "INFECTION"
+TableCM$CMTRT[TableCM$CMTRT == "M VITAMIN"] <- "MULTIVITAMIN"
+TableCM$CMTRT[TableCM$CMTRT == "methadone"] <- "METHADONE"
+TableCM$CMTRT[TableCM$CMTRT == "METHADOSE"] <- "METHADONE"
+TableCM$CMTRT[TableCM$CMTRT == "NEUROTIN"] <- "NEURONTIN"
+TableCM$CMTRT[TableCM$CMTRT == "trazodone"] <- "TRAZODONE"
+TableCM$CMTRT[TableCM$CMTRT == "TRAZADONE HYDROCHLORIDE"] <- "TRAZODONE"
+TableCM$CMTRT[TableCM$CMTRT == "Xanax"] <- "XANAX"
+
+TableCM$CMINDC[TableCM$CMINDC == "anxiety"] <- "ANXIETY"
+TableCM$CMINDC[TableCM$CMINDC == "BIPOLAR DO"] <- "BIPOLAR"
+TableCM$CMINDC[TableCM$CMINDC == "CRAMPING"] <- "CRAMPS"
+TableCM$CMINDC[TableCM$CMINDC == "ANTIDIABETIC"] <- "DIABETES"
+TableCM$CMINDC[TableCM$CMINDC == "DIETARY SUPPLEMENT"] <- "NUTRITIONAL SUPPL"
+TableCM$CMINDC[TableCM$CMINDC == "HEADACHE BACK PAIN"] <- "BACK PAIN"
+TableCM$CMINDC[TableCM$CMINDC == "INFECTED TOOTH"] <- "INFECTION"
+TableCM$CMINDC[TableCM$CMINDC == "MINOR PAIN"] <- "PAIN"
+TableCM$CMINDC[TableCM$CMINDC == "NAUSEA VOM"] <- "NAUSEA"
+TableCM$CMINDC[TableCM$CMINDC == "NECK PAIN"] <- "PAIN"
+TableCM$CMINDC[TableCM$CMINDC == "NOSE PAIN"] <- "PAIN"
+TableCM$CMINDC[TableCM$CMINDC == "PAIN HEADACHE"] <- "PAIN"
+TableCM$CMINDC[TableCM$CMINDC == "PAIN ANTICOAGULANT"] <- "PAIN"
+TableCM$CMINDC[TableCM$CMINDC == "SUPPLEMENT"] <- "NUTRITIONAL SUPPL"
+TableCM$CMINDC[TableCM$CMINDC == "Withdrawal Sx"] <- "WITHDRAWAL"
+TableCM$CMINDC[TableCM$CMINDC == "WD ANXIETY"] <- "WITHDRAWAL"
+TableCM$CMINDC[TableCM$CMINDC == "W/DS"] <- "WITHDRAWAL"
+TableCM$CMINDC[TableCM$CMINDC == "WD"] <- "WITHDRAWAL"
+TableCM$CMINDC[TableCM$CMINDC == "VITAMIN SUPP"] <- "NUTRITIONAL SUPPL"
+
+
+TableCM$CMTRT <- ifelse(table(TableCM$CMTRT)[TableCM$CMTRT] < 5 | is.na(TableCM$CMTRT), "OTHER", TableCM$CMTRT)
+TableCM$CMINDC <- ifelse(table(TableCM$CMINDC)[TableCM$CMINDC] < 5 | is.na(TableCM$CMINDC), "OTHER", TableCM$CMINDC)
+
+skim(TableCM)
+#CMDOSTOT small gram values needs to be altered or changed probably, NA also !!
+#CMTRT needs characters adjustement duplicates and changing low counts, 179 unique to 21
+#CMINDIC needs characters adjustement duplicates and changing low counts, 135 unique to 25
+
+#I need to try ML models on both tables the one above and the one abbreviated which is under : 
+TableCMshort <- TableCM 
+TableCMshort$CMTRT <- ifelse(TableCMshort$CMTRT %in% c("ACETAMINOPHEN", "TYLENOL"), "Pain relief medication", 
+                             ifelse(TableCMshort$CMTRT == "IBUPROFEN", "Pain relief medication", 
+                                    ifelse(TableCMshort$CMTRT == "NAPROXEN SODIUM", "Pain relief medication", 
+                                           TableCMshort$CMTRT)))
+
+TableCMshort$CMTRT <- ifelse(TableCMshort$CMTRT %in% c("BENADRYL", "COMPAZINE"), "Allergy and nausea medications", 
+                             ifelse(TableCMshort$CMTRT == "IMODIUM", "Allergy and nausea medications", 
+                                    ifelse(TableCMshort$CMTRT == "KAOPECTATE", "Allergy and nausea medications", TableCMshort$CMTRT)))
+
+TableCMshort$CMTRT <- ifelse(TableCMshort$CMTRT %in% c("BENTYL", "FLEXERIL"), "Muscle relaxants and antispasmodics", 
+                                    ifelse(TableCMshort$CMTRT == "ROBAXIN", "Muscle relaxants and antispasmodics", TableCMshort$CMTRT))
+
+TableCMshort$CMTRT <- ifelse(TableCMshort$CMTRT %in% c("PAXIL", "TRAZODONE"), "Antidepressants and anti-anxiety medications", 
+                             ifelse(TableCMshort$CMTRT == "VALIUM", "Antidepressants and anti-anxiety medications", 
+                                    ifelse(TableCMshort$CMTRT == "PROZAC", "Antidepressants and anti-anxiety medications", TableCMshort$CMTRT)))
+
+TableCMshort$CMINDC <- ifelse(TableCMshort$CMINDC %in% c("ABD CRAMPS", "ACHES", "BACK PAIN", "BODY ACHES", "CRAMPS", "HEADACHE", "MUSCLE CRAMPS"), "Pain related symptoms", 
+                             ifelse(TableCMshort$CMINDC == "PAIN", "Pain related symptoms", 
+                                    ifelse(TableCMshort$CMINDC == "SPASM", "Pain related symptoms", TableCMshort$CMINDC)))
+
+TableCMshort$CMINDC <- ifelse(TableCMshort$CMINDC %in% c("AGITATION", "ANXIETY", "DEPRESSION"), "Mental health related symptoms", 
+                              ifelse(TableCMshort$CMINDC == "INSOMNIA", "Mental health related symptoms", 
+                                     ifelse(TableCMshort$CMINDC == "PREVENT EPS", "Mental health related symptoms", TableCMshort$CMINDC)))
+
+TableCMshort$CMINDC <- ifelse(TableCMshort$CMINDC %in% c("DIARRHEA","NAUSEA"), "Digestive related symptoms", 
+                                     ifelse(TableCMshort$CMINDC == "NAUSEA", "Digestive related symptoms", TableCMshort$CMINDC))
+
+TableCMshort$CMINDC <- ifelse(TableCMshort$CMINDC %in% c("ASTHMA","DIABETES"), "Chronic health conditions", 
+                              ifelse(TableCMshort$CMINDC == "HYPERTENSION", "Chronic health conditions", TableCMshort$CMINDC))
+
+require(fastDummies)
+TableCMshort_encoded <- dummy_cols(TableCMshort, select_columns = c("CMTRT","CMINDC"), remove_first_dummy = FALSE)
+
+
+
+
+#NOTES : 
+# No need to change random seed to find an optimal one, if values changes too much it means something is wrong with our model to begin with.
+# large mtry numbers, this is the reason https://stackoverflow.com/questions/60458676/random-forest-how-mtry-is-larger-than-total-number-of-independent-variable
+# fitControl <- trainControl(method="repeatedcv",repeats=4,number=10,allowParallel = TRUE) 
+# Different type of CV
+# Difference between SBF & RFE
+# Kappa metric
+# Difference between test accuracy and train accuracy (overfitting)
+# Accuracy paradox (high % while positives are not detected)
+# AUC is just a number and it can be misleading, you need to see the ROC curve at a given speci/sens
+# Never tune model after using the test set, model tuning should always be on the Validation set, as the test set doesn't represent the whole distribution of the population you shouldn't fit the model on it. It should be generalized
+```
+
+In case of any questions or suggestions to improve the code, do not hesitate to contact me at yahia.rafik.m@gmail.com
+
+Thank you!
+
+
+```{r xxx, echo=FALSE, warning=FALSE}
+
+```
+
+```{r xxxx, echo=FALSE, warning=FALSE}
+
+```
+
