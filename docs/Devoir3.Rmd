@@ -1010,6 +1010,8 @@ confusionMatrix(data = KNNalgo9res, reference = testref$Treatment_Results, posit
 
 Next step :  
 
+- using SMOTE for the imbalanced classification problem we have (38% sensitivity)
+
 - feature engineering, modeling the existing data so that it can be more useful in our classification.
 
 - adding more data from the other excel files and see their influence on our algorithms.
