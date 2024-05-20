@@ -1,2 +1,1 @@
-Hello 
-test test
+Academic projects hosted in GitHub Pages (In progress)
